@@ -7,6 +7,7 @@ import { api, step } from "./api.ts";
 import AgentList from "./components/AgentList.tsx";
 import ConversationOverview from "./components/ConversationOverview.tsx";
 import LogList from "./components/LogList.tsx";
+import MessageDiagnostics from "./components/MessageDiagnostics.tsx";
 import MessageList from "./components/MessageList.tsx";
 import MessageQueue from "./components/MessageQueue.tsx";
 import RunControls from "./components/RunControls.tsx";
@@ -17,6 +18,7 @@ import type {
   LogMessage,
   MessageHistoryMap,
   MessageHistoryState,
+  MessageDiagnostic,
 } from "./shared-types";
 
 const App: React.FC = () => {
@@ -32,7 +34,7 @@ const App: React.FC = () => {
   const [currentSession, setCurrentSession] = useState<number | undefined>(
     undefined,
   );
-  const [allTopics, setAllTopics] = useState<string[]>([]);
+  const [diagnostics, setDiagnostics] = useState<MessageDiagnostic[]>([]);
 
   // timer to poll backend
   useEffect(() => {
@@ -107,13 +109,13 @@ const App: React.FC = () => {
       .catch((error) => console.error("Error fetching loop_status:", error));
 
     api
-      .get<string[]>("/topics")
+      .get<MessageDiagnostic[]>("/message_diagnostics")
       .then((response) => {
-        setAllTopics((prev) =>
+        setDiagnostics((prev) =>
           _.isEqual(prev, response.data) ? prev : response.data,
         );
       })
-      .catch((error) => console.error("Error fetching topics:", error));
+      .catch((error) => console.error("Error fetching diagnostics:", error));
   }, [timeStep]);
 
   const onProcessNext = useCallback(() => {
@@ -132,6 +134,13 @@ const App: React.FC = () => {
 
   const onSend = useCallback(() => {
     setTimeStep((prev) => prev + 1);
+  }, []);
+
+  const onDiagnostic = useCallback((diagnostic: MessageDiagnostic) => {
+    setDiagnostics((previous) => [
+      diagnostic,
+      ...previous.filter((item) => item.id !== diagnostic.id).slice(0, 49),
+    ]);
   }, []);
 
   const setLoop = useCallback((state: "start" | "stop") => {
@@ -153,7 +162,6 @@ const App: React.FC = () => {
   }, []);
 
   const memoizedAgents = useMemo(() => agents, [agents]);
-  const memoizedTopics = useMemo(() => allTopics, [allTopics]);
   const memoizedLogs = useMemo(() => logs, [logs]);
   const memoizedMessageQueue = useMemo(() => messageQueue, [messageQueue]);
   const memoizedSessionHistory = useMemo(
@@ -183,7 +191,7 @@ const App: React.FC = () => {
   return (
     <div className="bg-gray-100 text-gray-900 flex flex-col min-h-screen">
       <header className="bg-primary-900 text-white p-3 flex">
-        <h1 className="text-2xl">🧭 AGDebugger</h1>
+        <h1 className="text-2xl">AGDebugger 工作流调试器</h1>
       </header>
 
       {/* body */}
@@ -201,8 +209,18 @@ const App: React.FC = () => {
               <SendMessage
                 agents={memoizedAgents}
                 onSend={onSend}
-                topics={memoizedTopics}
+                onDiagnostic={onDiagnostic}
+                currentSession={currentSession ?? 0}
+                checkpointTimestamps={
+                  memoizedSessionHistory != undefined &&
+                  currentSession != undefined
+                    ? memoizedSessionHistory[currentSession].messages.map(
+                        (message) => message.timestamp,
+                      )
+                    : []
+                }
               />
+              <MessageDiagnostics diagnostics={diagnostics} />
               <MessageQueue
                 messages={memoizedMessageQueue}
                 numOutstandingTasks={numTasks}
@@ -236,6 +254,9 @@ const App: React.FC = () => {
           <ConversationOverview
             messageHistoryData={memoizedSessionHistory}
             currentSession={currentSession}
+            agents={memoizedAgents}
+            messageQueue={memoizedMessageQueue}
+            diagnostics={diagnostics}
           />
         )}
       </div>

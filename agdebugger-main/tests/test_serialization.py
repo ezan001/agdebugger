@@ -62,13 +62,14 @@ def test_serialize_and_deserialize_group_chat_message():
 
 def test_serialize_and_deserialize_group_chat_agent_response():
     message = GroupChatAgentResponse(
-        agent_response=Response(
+        response=Response(
             chat_message=TextMessage(
                 source="user",
                 content="content",
             ),
             inner_messages=None,
-        )
+        ),
+        name="LOCAL_AGENT_1",
     )
     deserialized = serialize_and_deserialize(message)
     assert message == deserialized

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from autogen_core import AgentId, TopicId
 from pydantic import BaseModel
@@ -109,3 +109,21 @@ class EditHistoryMessage(BaseModel):
 class AgentInfo(BaseModel):
     config: Mapping[str, Any] | None = None
     state: Mapping[str, Any] | str | None = None
+
+
+WorkflowMessageType = Literal[
+    "START_TASK",
+    "SEND_MESSAGE",
+    "RESET_AND_EDIT",
+    "RETRY_FROM_HERE",
+]
+
+
+class WorkflowMessagePayload(BaseModel):
+    message_type: WorkflowMessageType
+    content: Any = None
+    receiver: str | None = None
+    session_id: int
+    workflow_id: str | None = None
+    run_mode: Literal["auto", "manual"] = "manual"
+    checkpoint_timestamp: int | None = None

@@ -172,20 +172,49 @@ def deserialize(
     message_dict: Dict | str,
 ) -> ChatMessage | AgentEvent | LLMMessage | None:
     try:
-        if isinstance(message_dict, str):
-            message_dict = json.loads(message_dict)
-
-        message_type = message_dict["type"]  # type: ignore
-
-        if message_type == "None":
-            return None
-
-        new_message_class = __message_map[message_type]
-        new_message = new_message_class(**message_dict)
-        return new_message
+        return deserialize_or_raise(message_dict)
     except Exception as e:
         print(
             f"[WARN] Unable to deserialize message dict into Pydantic class. Error: {str(e)}.\nMessage dict: ",
             message_dict,
         )
         return None
+
+
+def deserialize_or_raise(
+    message_dict: Dict | str,
+) -> ChatMessage | AgentEvent | LLMMessage | None:
+    if isinstance(message_dict, str):
+        message_dict = json.loads(message_dict)
+    if not isinstance(message_dict, dict):
+        raise TypeError(f"Expected a JSON object or JSON string, got {type(message_dict).__name__}")
+
+    message_type = message_dict.get("type")
+    if not message_type:
+        raise ValueError("Typed message is missing the required 'type' field")
+    if message_type == "None":
+        return None
+    if message_type not in __message_map:
+        raise ValueError(f"Unknown typed message '{message_type}'")
+
+    new_message_class = __message_map[message_type]
+    parsed_fields = {
+        key: _deserialize_nested(value)
+        for key, value in message_dict.items()
+        if key != "type"
+    }
+    return new_message_class(**parsed_fields)
+
+
+def _deserialize_nested(value):
+    if isinstance(value, list):
+        return [_deserialize_nested(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    parsed = {key: _deserialize_nested(item) for key, item in value.items()}
+    nested_type = parsed.get("type")
+    if nested_type in __message_map:
+        nested_class = __message_map[nested_type]
+        return nested_class(**{key: item for key, item in parsed.items() if key != "type"})
+    return parsed

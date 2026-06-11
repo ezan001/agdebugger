@@ -14,7 +14,11 @@ const GroupChatAgentDisplay: React.FC<MessageDisplayProps> = ({
 
   function getValue(message) {
     if (type === "GroupChatAgentResponse") {
-      return message?.agent_response?.chat_message?.content || "";
+      return (
+        message?.response?.chat_message?.content ||
+        message?.agent_response?.chat_message?.content ||
+        ""
+      );
     }
     if (type === "GroupChatMessage" || type === "GroupChatTermination") {
       return message?.message?.content || "";
@@ -29,7 +33,9 @@ const GroupChatAgentDisplay: React.FC<MessageDisplayProps> = ({
       const updatedMessage = structuredClone(prev);
 
       if (type === "GroupChatAgentResponse") {
-        updatedMessage.agent_response.chat_message.content = s;
+        const responseKey =
+          updatedMessage.response !== undefined ? "response" : "agent_response";
+        updatedMessage[responseKey].chat_message.content = s;
       } else if (
         type === "GroupChatMessage" ||
         type === "GroupChatTermination"

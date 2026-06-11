@@ -1,191 +1,198 @@
-import { scaleOrdinal } from "d3";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 
 import type {
-  colorOption,
+  AgentName,
   Message,
+  MessageDiagnostic,
   MessageHistoryMap,
-  ResetMap,
 } from "../shared-types";
-import MessageHistoryChart from "./viz/MessageHistoryChart";
-import { COLOR_RANGE, getMessageField } from "./viz/viz-utils";
+
+const AGENT_LABELS: Record<string, string> = {
+  Orchestrator: "总控 Agent",
+  WebSurfer: "网页搜索 Agent",
+  FileSurfer: "文件读取 Agent",
+  Coder: "代码编写 Agent",
+  Executor: "代码执行 Agent",
+  User: "用户",
+};
+
+interface TimelineNode {
+  id: string;
+  lane: string;
+  sender?: string | null;
+  receiver?: string | null;
+  messageType: string;
+  status: "queued" | "processed" | "failed" | "edited";
+  detail: unknown;
+}
 
 interface ConversationOverviewProps {
   messageHistoryData: MessageHistoryMap;
   currentSession: number;
+  agents: AgentName[];
+  messageQueue: Message[];
+  diagnostics: MessageDiagnostic[];
 }
+
+const normalizeAgent = (value?: string | null) => {
+  if (!value) return "User";
+  if (value.includes("/")) return value.split("/")[0];
+  return value;
+};
 
 const ConversationOverview: React.FC<ConversationOverviewProps> = ({
   messageHistoryData,
   currentSession,
+  agents,
+  messageQueue,
+  diagnostics,
 }) => {
-  const [colorEncode, setColorEncode] = useState<colorOption>("type");
-  const colorEncodeOptions: colorOption[] = [
-    "none",
-    "type",
-    "sender",
-    "recipient",
-  ];
-  const [filterValue, setFilterValue] = useState<string>();
-  const [displayHistory, setDisplayHistory] = useState<
-    MessageHistoryMap | undefined
-  >(messageHistoryData);
+  const [selectedNode, setSelectedNode] = useState<TimelineNode>();
 
-  const uniqueValues =
-    colorEncode === "none" || messageHistoryData == undefined
-      ? []
-      : Array.from(
-          new Set(
-            Object.values(messageHistoryData).flatMap((h) =>
-              h.messages.map((message: Message) =>
-                getMessageField(message, colorEncode),
-              ),
-            ),
-          ),
-        ).sort();
+  const nodes = useMemo(() => {
+    const result: TimelineNode[] = [];
+    Object.entries(messageHistoryData).forEach(([sessionId, session]) => {
+      session.messages.forEach((message) => {
+        const innerType =
+          typeof message.message === "object" && message.message !== null
+            ? String((message.message as { type?: string }).type || message.type)
+            : message.type;
+        result.push({
+          id: `history-${sessionId}-${message.timestamp}`,
+          lane: normalizeAgent(message.recipient || message.sender),
+          sender: normalizeAgent(message.sender),
+          receiver: normalizeAgent(message.recipient),
+          messageType: innerType,
+          status:
+            Number(sessionId) === currentSession ? "processed" : "edited",
+          detail: message,
+        });
+      });
+    });
 
-  const sessionResetTimestamps = Object.keys(messageHistoryData).reduce(
-    (acc: ResetMap, sessionKey: string) => {
-      const session = messageHistoryData[Number(sessionKey)];
-      const firstMessage = session.messages.find(
-        (message: Message) =>
-          session.current_session_reset_from != undefined &&
-          message.timestamp > session.current_session_reset_from,
+    messageQueue.forEach((message, index) => {
+      result.push({
+        id: `queue-${message.id}-${index}`,
+        lane: normalizeAgent(message.recipient),
+        sender: normalizeAgent(message.sender),
+        receiver: normalizeAgent(message.recipient),
+        messageType:
+          String((message.message as { type?: string })?.type || message.type),
+        status: "queued",
+        detail: message,
+      });
+    });
+
+    diagnostics.forEach((diagnostic) => {
+      const failedStep = Object.entries(diagnostic.steps).find(
+        ([, step]) => step.status === "error",
       );
-      // const firstMessage = firstMessageIndex !== -1 ? session.messages[firstMessageIndex] : undefined;
-      if (firstMessage != undefined) {
-        acc[Number(sessionKey)] = firstMessage.timestamp;
+      if (failedStep) {
+        result.push({
+          id: diagnostic.id,
+          lane: normalizeAgent(
+            (diagnostic.parsed_payload as { receiver?: string } | undefined)
+              ?.receiver,
+          ),
+          sender: "User",
+          receiver:
+            (diagnostic.parsed_payload as { receiver?: string } | undefined)
+              ?.receiver || null,
+          messageType: failedStep[0],
+          status: "failed",
+          detail: {
+            raw_backend_body: diagnostic.raw_body,
+            parsed_payload: diagnostic.parsed_payload,
+            error: failedStep[1],
+          },
+        });
       }
-      return acc;
-    },
-    {},
+    });
+    return result;
+  }, [currentSession, diagnostics, messageHistoryData, messageQueue]);
+
+  const lanes = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          "User",
+          "Orchestrator",
+          ...agents,
+          ...nodes.map((node) => node.lane),
+        ]),
+      ),
+    [agents, nodes],
   );
 
-  const updateFilterValue = (value: string) => {
-    if (filterValue === value) {
-      setFilterValue(undefined);
-    } else {
-      setFilterValue(value);
-    }
+  const statusClass: Record<TimelineNode["status"], string> = {
+    queued: "border-amber-400 bg-amber-50",
+    processed: "border-green-400 bg-green-50",
+    failed: "border-red-500 bg-red-50",
+    edited: "border-purple-400 bg-purple-50",
   };
 
-  const shouldDisplay = (
-    message: Message,
-    currentFilterValue: string | undefined,
-    _colorField: colorOption,
-  ): boolean => {
-    if (currentFilterValue === undefined || _colorField === "none") {
-      return true;
-    }
-
-    return currentFilterValue === getMessageField(message, _colorField);
-  };
-
-  useEffect(() => {
-    if (messageHistoryData != undefined) {
-      const filteredHistory: MessageHistoryMap = {};
-
-      for (const [key, session] of Object.entries(messageHistoryData)) {
-        const filteredMessages = session.messages.filter((message: Message) =>
-          shouldDisplay(message, filterValue, colorEncode),
-        );
-        filteredHistory[Number(key)] = {
-          ...session,
-          messages: filteredMessages,
-        };
-      }
-
-      setDisplayHistory(filteredHistory);
-    }
-  }, [messageHistoryData, filterValue, colorEncode]);
-
-  const _colorScale = scaleOrdinal<string>()
-    .domain(uniqueValues)
-    .range(COLOR_RANGE);
-
-  const getColor = (str: string | undefined | null): string => {
-    if (!str) {
-      return "#9ca3af"; // Default gray 400 if undefined or empty
-    }
-
-    return _colorScale(str);
-  };
-
-  if (displayHistory != undefined)
-    return (
-      // <div className="py-2 px-4 border-b-2 border-gray-300">
-      <div className="sticky top-0 z-10 h-screen overflow-y-auto shrink-0 border-l-2 border-gray-200 py-2 px-4">
-        <div className="flex gap-4 items-end">
-          <h3 className="text-lg font-semibold">Overview</h3>
-          <div className="">
-            Session <span className="font-semibold">{currentSession}</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 text-sm">
-          Color:
-          <select
-            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-              setColorEncode(e.target.value as colorOption);
-              setFilterValue(undefined);
-            }}
-            // sizing={"sm"}
-            value={colorEncode}
-            // color="light"
-            title="Color encoding"
-            className="text-sm border-none bg-gray-100 rounded p-1 w-24"
-          >
-            {colorEncodeOptions.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <div className="inline-block align-top">
-            <MessageHistoryChart
-              messageHistoryData={displayHistory}
-              colorField={colorEncode}
-              currentSession={currentSession}
-              getColor={getColor}
-              sessionResetTimestamps={sessionResetTimestamps}
-            />
-          </div>
-          {/* legend */}
-          <div className="inline-block align-top mt-14 ml-2 sticky top-5 z-10">
-            {uniqueValues.map((value) => (
-              <button
-                key={value}
-                className="flex items-center gap-2"
-                onClick={() => updateFilterValue(value)}
-              >
-                <div
-                  className="h-4 w-4 rounded-sm"
-                  style={{
-                    backgroundColor: getColor(value),
-                  }}
-                />
-                {value == undefined || value == null ? (
-                  <span
-                    className={`text-sm italic ${value === filterValue ? "font-bold" : ""}`}
-                  >
-                    Null
-                  </span>
-                ) : (
-                  <span
-                    className={`text-sm ${value === filterValue ? "font-bold" : ""}`}
-                  >
-                    {value}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
+  return (
+    <aside className="sticky top-0 h-screen w-[460px] shrink-0 overflow-auto border-l-2 border-gray-200 bg-gray-50 p-4">
+      <div className="flex items-end justify-between">
+        <h3 className="text-lg font-semibold">Agent 泳道与工作流时间线</h3>
+        <span className="text-sm">Session {currentSession}</span>
       </div>
-    );
+      <div className="mt-2 flex flex-wrap gap-2 text-xs">
+        <span className="rounded bg-amber-100 px-2 py-1">队列中</span>
+        <span className="rounded bg-green-100 px-2 py-1">已处理</span>
+        <span className="rounded bg-red-100 px-2 py-1">失败</span>
+        <span className="rounded bg-purple-100 px-2 py-1">用户 edit 分支</span>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {lanes.map((lane) => (
+          <div
+            key={lane}
+            className="grid min-h-16 grid-cols-[120px_1fr] rounded border bg-white"
+          >
+            <div className="border-r bg-gray-100 p-2 text-sm font-medium">
+              <div>{AGENT_LABELS[lane] || lane}</div>
+              <div className="text-xs font-normal text-gray-500">{lane}</div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 p-2">
+              {nodes
+                .filter((node) => node.lane === lane)
+                .map((node) => (
+                  <button
+                    key={node.id}
+                    className={`max-w-52 rounded border-l-4 p-2 text-left text-xs ${statusClass[node.status]}`}
+                    onClick={() => setSelectedNode(node)}
+                  >
+                    <div className="font-semibold">{node.messageType}</div>
+                    <div className="truncate">
+                      {node.sender || "User"} → {node.receiver || lane}
+                    </div>
+                    <div>{node.status}</div>
+                  </button>
+                ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {selectedNode && (
+        <div className="mt-4 rounded border bg-white p-3">
+          <div className="flex items-center justify-between">
+            <h4 className="font-semibold">节点详情</h4>
+            <button
+              className="text-sm text-gray-500"
+              onClick={() => setSelectedNode(undefined)}
+            >
+              关闭
+            </button>
+          </div>
+          <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-xs">
+            {JSON.stringify(selectedNode.detail, null, 2)}
+          </pre>
+        </div>
+      )}
+    </aside>
+  );
 };
 
 export default ConversationOverview;
