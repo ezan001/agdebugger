@@ -1,11 +1,12 @@
 import asyncio
 import logging
 import time
+import uuid
 from typing import Any, Dict, List
 
 from autogen_agentchat.teams import BaseGroupChat
 from autogen_core import AgentId, DefaultTopicId, SingleThreadedAgentRuntime, TopicId
-from autogen_core._queue import Queue
+from autogen_core._queue import Queue, QueueShutDown
 from autogen_core._single_threaded_agent_runtime import (
     PublishMessageEnvelope,
     ResponseMessageEnvelope,
@@ -51,6 +52,9 @@ class BackendRuntimeManager:
         logger.addHandler(self.log_handler)
         self.ready = False
         self.message_diagnostics: List[Dict[str, Any]] = []
+        self.runs: List[Dict[str, Any]] = []
+        self.current_run_id: str | None = None
+        self.message_run_ids: Dict[str, str] = {}
 
         print("Initial Backend loaded.")
 
@@ -130,8 +134,65 @@ class BackendRuntimeManager:
         checkpoint = await self.runtime.save_state()
         self.agent_checkpoints[timestamp] = checkpoint
 
+    def start_run(self, task: str | None) -> Dict[str, Any]:
+        history = self.intervention_handler.history
+        start_timestamp = history[-1].timestamp + 1 if history else 0
+        run = {
+            "run_id": str(uuid.uuid4()),
+            "task": task,
+            "started_at": time.time(),
+            "start_timestamp": start_timestamp,
+        }
+        self.runs.append(run)
+        self.current_run_id = run["run_id"]
+        return run
+
+    def start_branch_run(self, cutoff_timestamp: int, branch_type: str) -> Dict[str, Any]:
+        parent_run_id = self.current_run_id
+        run = self.start_run(task=None)
+        run.update(
+            {
+                "parent_run_id": parent_run_id,
+                "branch_from_timestamp": cutoff_timestamp,
+                "branch_type": branch_type,
+            }
+        )
+        return run
+
+    def get_run_for_timestamp(self, timestamp: int | None) -> Dict[str, Any] | None:
+        if timestamp is None:
+            return next(
+                (run for run in reversed(self.runs) if run["run_id"] == self.current_run_id),
+                None,
+            )
+        return next(
+            (
+                run
+                for run in reversed(self.runs)
+                if timestamp >= run["start_timestamp"]
+            ),
+            None,
+        )
+
+    def message_to_json(self, message: Any, timestamp: int | None = None) -> Dict[str, Any]:
+        message_id = getattr(message, "message_id", None)
+        mapped_run_id = self.message_run_ids.get(message_id)
+        run = next(
+            (item for item in self.runs if item["run_id"] == mapped_run_id),
+            None,
+        ) or self.get_run_for_timestamp(timestamp)
+        serialized = message_to_json(
+            message,
+            timestamp,
+            run_id=run["run_id"] if run is not None else None,
+        )
+        serialized["run_started_at"] = (
+            run["started_at"] if run is not None else None
+        )
+        return serialized
+
     def get_current_history(self):
-        return [message_to_json(m.message, m.timestamp) for m in self.intervention_handler.history]
+        return [self.message_to_json(m.message, m.timestamp) for m in self.intervention_handler.history]
 
     def save_history_session_from_reset(self, new_reset_from: int) -> None:
         self.prior_histories[self.session_counter] = MessageHistorySession(
@@ -202,6 +263,12 @@ class BackendRuntimeManager:
         for _ in range(20):
             await asyncio.sleep(0)
             if self.unprocessed_messages_count > queue_size_before:
+                if self.current_run_id is not None:
+                    queued_messages = self.message_queue_list
+                    for queued in queued_messages[queue_size_before:]:
+                        message_id = getattr(queued, "message_id", None)
+                        if message_id is not None:
+                            self.message_run_ids[message_id] = self.current_run_id
                 return self.unprocessed_messages_count
         raise RuntimeError("Runtime accepted the send call but the message queue did not increase")
 
@@ -232,10 +299,82 @@ class BackendRuntimeManager:
             await newQueue.put(item)
         self.runtime._message_queue = newQueue
 
-    async def edit_and_revert_message(self, new_message: Any | None, cutoff_timestamp: int):
-        # immediately stop and clear queue
+    async def stop_and_clear_queue(self) -> None:
         if self.is_processing:
-            await self.stop_processing()
+            await self.runtime.stop()
+        self.runtime._message_queue = Queue()
+
+    async def reset_debugger(self, clear_all: bool) -> None:
+        await self.stop_and_clear_queue()
+        try:
+            await self.groupchat.reset()
+        except QueueShutDown:
+            # AutoGen may race its idle-stop with the freshly drained queue.
+            # Reset messages have already been delivered at this point.
+            pass
+        self.log_handler.log_messages = []
+
+        if clear_all:
+            self.intervention_handler.history = []
+            self.intervention_handler.timestamp_counter.set(0)
+            self.prior_histories = {}
+            self.session_counter = 0
+            self.current_session_reset_from = None
+            self.agent_checkpoints = {}
+            self.message_diagnostics = []
+            self.runs = []
+            self.current_run_id = None
+            self.message_run_ids = {}
+            return
+
+        run_id = self.current_run_id
+        if run_id is None:
+            return
+
+        removed_timestamps = {
+            item.timestamp
+            for item in self.intervention_handler.history
+            if (run := self.get_run_for_timestamp(item.timestamp)) is not None
+            and run["run_id"] == run_id
+        }
+        self.intervention_handler.history = [
+            item
+            for item in self.intervention_handler.history
+            if item.timestamp not in removed_timestamps
+        ]
+        self.intervention_handler.invalidate_cache()
+        self.agent_checkpoints = {
+            timestamp: checkpoint
+            for timestamp, checkpoint in self.agent_checkpoints.items()
+            if timestamp not in removed_timestamps
+        }
+        self.message_diagnostics = [
+            diagnostic
+            for diagnostic in self.message_diagnostics
+            if diagnostic.get("run_id") != run_id
+        ]
+        self.runs = [run for run in self.runs if run["run_id"] != run_id]
+        self.current_run_id = None
+        valid_run_ids = {run["run_id"] for run in self.runs}
+        self.message_run_ids = {
+            message_id: mapped_run_id
+            for message_id, mapped_run_id in self.message_run_ids.items()
+            if mapped_run_id in valid_run_ids
+        }
+
+        for session in self.prior_histories.values():
+            session.messages = [
+                message for message in session.messages if message.get("run_id") != run_id
+            ]
+
+    async def edit_and_revert_message(
+        self,
+        new_message: Any | None,
+        cutoff_timestamp: int,
+        branch_type: str = "RETRY_FROM_HERE",
+    ) -> Dict[str, Any]:
+        # immediately stop and clear queue
+        await self.stop_and_clear_queue()
 
         current_message = self.intervention_handler.get_message_at_timestamp(cutoff_timestamp)
         if current_message is None:
@@ -243,6 +382,7 @@ class BackendRuntimeManager:
 
         self.save_history_session_from_reset(cutoff_timestamp)
         self.intervention_handler.purge_history_after_cutoff(cutoff_timestamp)
+        branch_run = self.start_branch_run(cutoff_timestamp, branch_type)
 
         # edit actual message and add to queue
         if new_message is None:
@@ -260,9 +400,17 @@ class BackendRuntimeManager:
                 f"Failed to re-send message after history reset. Unsure how to handle message of type: {current_message.message}"
             )
 
+        await asyncio.sleep(0)
+        for queued in self.message_queue_list:
+            message_id = getattr(queued, "message_id", None)
+            if message_id is not None:
+                self.message_run_ids[message_id] = branch_run["run_id"]
+
         # NOTE: reset can be slow if heavy state so performing after message is sent.
         checkpoint = self.agent_checkpoints.get(cutoff_timestamp, None)
         if checkpoint is not None:
             await self.runtime.load_state(checkpoint)
         else:
             print("[WARN] Was unable to find agent state checkpoint for time ", cutoff_timestamp)
+
+        return branch_run

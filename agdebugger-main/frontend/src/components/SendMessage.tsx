@@ -96,7 +96,6 @@ const SendMessage: React.FC<SendMessageProps> = memo(
         checkpointTimestamp: checkpoint,
         gaiaMode,
       });
-      if (mode === "START_TASK") onStartTask();
       const frontendDiagnostic: MessageDiagnostic = {
         id: `frontend-${Date.now()}`,
         created_at: Date.now() / 1000,
@@ -112,6 +111,7 @@ const SendMessage: React.FC<SendMessageProps> = memo(
         const response = await api.post<{
           diagnostic: MessageDiagnostic;
         }>("/workflow/messages", payload);
+        if (mode === "START_TASK") onStartTask();
         onDiagnostic(response.data.diagnostic);
         setErrorMessage("");
         if (mode !== "SEND_MESSAGE") setContent("");
@@ -162,6 +162,9 @@ const SendMessage: React.FC<SendMessageProps> = memo(
             onChange={setGaiaMode}
           />
         </div>
+        <p className="mt-1 text-right text-xs text-gray-500">
+          仅调整答案格式；当前团队由 scenario.py 决定
+        </p>
 
         <form className="mt-3 space-y-3" onSubmit={handleSubmit}>
           <label className="block text-sm font-medium">
@@ -261,10 +264,12 @@ const SendMessage: React.FC<SendMessageProps> = memo(
 
           {gaiaMode && (
             <div className="rounded border border-blue-200 bg-blue-50 p-3 text-sm">
-              <div className="font-medium">GAIA 推荐操作</div>
-              <p>网页题：启用 WebSurfer</p>
-              <p>文件题：启用 FileSurfer，并检查附件路径</p>
-              <p>计算/表格题：启用 Coder + Executor</p>
+              <div className="font-medium">GAIA 回答格式</div>
+              <p>
+                此开关只追加 FINAL ANSWER 格式，不会自动加载额外 Agent
+                或触发重试。
+              </p>
+              <p>实际可用能力以顶部“当前团队”为准。</p>
               <p className="mt-1 font-mono">FINAL ANSWER: [答案]</p>
             </div>
           )}

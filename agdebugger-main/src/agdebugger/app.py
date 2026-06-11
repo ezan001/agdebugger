@@ -67,7 +67,7 @@ async def get_server(module_str: str, message_history=None, state_cache=None) ->
 
     @api.get("/getMessageQueue")
     async def get_messages():
-        message_queue = [message_to_json(msg) for msg in backend.message_queue_list]
+        message_queue = [backend.message_to_json(msg) for msg in backend.message_queue_list]
         return message_queue
 
     @api.get("/getSessionHistory")
@@ -77,6 +77,8 @@ async def get_server(module_str: str, message_history=None, state_cache=None) ->
         return {
             "current_session": backend.session_counter,
             "message_history": saved_sessions,
+            "current_run_id": backend.current_run_id,
+            "runs": backend.runs,
         }
 
     @api.get("/num_tasks")
@@ -134,7 +136,7 @@ async def get_server(module_str: str, message_history=None, state_cache=None) ->
             if processed:
                 diagnostic["steps"]["first_agent_processed"] = {
                     "status": "success",
-                    "detail": message_to_json(processed[0].message, processed[0].timestamp),
+                    "detail": backend.message_to_json(processed[0].message, processed[0].timestamp),
                 }
         return diagnostics
 
@@ -184,6 +186,23 @@ async def get_server(module_str: str, message_history=None, state_cache=None) ->
             raise HTTPException(status_code=422, detail=diagnostic) from exc
 
         try:
+            if payload.message_type == "START_TASK":
+                diagnostic["run_id"] = backend.current_run_id
+                if backend.unprocessed_messages_count > 0:
+                    raise ValueError(
+                        "A previous task still has queued messages. Wait for it to finish or reset the debugger session."
+                    )
+                if backend.is_processing:
+                    await backend.stop_processing()
+                run = backend.start_run(
+                    payload.content if isinstance(payload.content, str) else None
+                )
+                diagnostic["run_id"] = run["run_id"]
+                diagnostic["run_started_at"] = run["started_at"]
+                diagnostic["run_start_timestamp"] = run["start_timestamp"]
+            else:
+                diagnostic["run_id"] = backend.current_run_id
+
             if payload.message_type in ("RESET_AND_EDIT", "RETRY_FROM_HERE"):
                 if payload.checkpoint_timestamp is None:
                     raise ValueError(f"{payload.message_type} requires checkpoint_timestamp")
@@ -196,7 +215,14 @@ async def get_server(module_str: str, message_history=None, state_cache=None) ->
                     "status": "success",
                     "detail": payload.content,
                 }
-                await backend.edit_and_revert_message(new_message, payload.checkpoint_timestamp)
+                branch_run = await backend.edit_and_revert_message(
+                    new_message,
+                    payload.checkpoint_timestamp,
+                    branch_type=payload.message_type,
+                )
+                diagnostic["run_id"] = branch_run["run_id"]
+                diagnostic["run_started_at"] = branch_run["started_at"]
+                diagnostic["branch_from_timestamp"] = payload.checkpoint_timestamp
                 diagnostic["steps"]["message_queued"] = {
                     "status": "success",
                     "detail": {"queue_size": backend.unprocessed_messages_count},
@@ -301,10 +327,28 @@ async def get_server(module_str: str, message_history=None, state_cache=None) ->
                 new_message = deserialize(edit_message.body)
             else:
                 new_message = None
-            await backend.edit_and_revert_message(new_message, edit_message.timestamp)
+            branch_run = await backend.edit_and_revert_message(
+                new_message,
+                edit_message.timestamp,
+                branch_type="RESET_AND_EDIT" if new_message is not None else "RETRY_FROM_HERE",
+            )
+            backend.start_processing()
         except Exception as e:
-            return {"status": "error", "message": e}
+            raise HTTPException(status_code=422, detail=str(e)) from e
 
+        return {"status": "ok", "run": branch_run}
+
+    @api.post("/debugger/reset-current-run")
+    async def reset_current_run():
+        await backend.reset_debugger(clear_all=False)
+        return {
+            "status": "ok",
+            "current_run_id": backend.current_run_id,
+        }
+
+    @api.post("/debugger/reset-all")
+    async def reset_all_history():
+        await backend.reset_debugger(clear_all=True)
         return {"status": "ok"}
 
     @api.get("/logs")

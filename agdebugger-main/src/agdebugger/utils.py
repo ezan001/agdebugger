@@ -46,6 +46,7 @@ def message_to_json(
         | ThoughtMessage
     ),
     timestamp: int | None = None,
+    run_id: str | None = None,
 ) -> Dict[str, Any]:
     # if not is_dataclass(msg):
     #     raise ValueError(f"Expected a dataclass, got {type(msg)}")
@@ -60,6 +61,7 @@ def message_to_json(
                 "recipient": None,
                 "type": "PublishMessageEnvelope",
                 "timestamp": timestamp,
+                "run_id": run_id,
                 "id": id(message),  # TODO: look into messsage.id
             }
 
@@ -72,6 +74,7 @@ def message_to_json(
                 "recipient": str(recipient),
                 "type": "SendMessageEnvelope",
                 "timestamp": timestamp,
+                "run_id": run_id,
                 "id": id(message),  # TODO: look into messsage.id
             }
         case ResponseMessageEnvelope(
@@ -83,6 +86,7 @@ def message_to_json(
                 "recipient": str(recipient) if recipient is not None else None,
                 "type": "ResponseMessageEnvelope",
                 "timestamp": timestamp,
+                "run_id": run_id,
                 "id": id(message),
             }
 
@@ -93,6 +97,7 @@ def message_to_json(
                 "recipient": None,
                 "type": "ThoughtMessage",
                 "timestamp": timestamp,
+                "run_id": run_id,
                 "id": id(msg),
             }
 

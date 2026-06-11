@@ -11,20 +11,32 @@ const DISPLAY_NAMES: Record<string, string> = {
   RoundRobinGroupChatManager: "轮询群聊管理器",
   User: "用户",
   Group: "群组",
+  Failure: "失败",
+  EditBranch: "用户 edit 分支",
 };
 
-export function getAgentBaseName(value?: string | null): string {
+export function canonicalAgentKey(value?: string | null): string {
   if (!value) return "User";
 
-  const withoutSession = value.split("/")[0];
-  return withoutSession
+  const normalized = value
+    .replace(/\/default$/i, "")
+    .split("/")[0]
     .replace(new RegExp(`[_-]?${UUID_PATTERN.source}$`, "i"), "")
     .replace(UUID_PATTERN, "")
     .replace(/[_-]+$/, "");
+
+  if (/MagenticOneOrchestrator|MagenticOneGroupChatManager|Orchestrator/i.test(normalized)) {
+    return "MagenticOneOrchestrator";
+  }
+  if (/WebSurfer/i.test(normalized)) return "WebSurfer";
+  return normalized || "User";
+}
+
+export function getAgentBaseName(value?: string | null): string {
+  return canonicalAgentKey(value);
 }
 
 export function getDisplayName(value?: string | null): string {
-  const baseName = getAgentBaseName(value);
+  const baseName = canonicalAgentKey(value);
   return DISPLAY_NAMES[baseName] || baseName || "未知 Agent";
 }
-

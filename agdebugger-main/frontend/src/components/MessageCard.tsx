@@ -12,6 +12,11 @@ import {
   getActionDisplayName,
   getEventDisplayName,
 } from "../utils/event-display";
+import {
+  classifyTraceMessage,
+  getReadableMessageContent,
+  isErrorMessage,
+} from "../utils/trace-display";
 import DisplayMessage from "./MessageDisplays/DisplayMessage";
 
 interface MessageProps {
@@ -105,6 +110,21 @@ const MessageCard: React.FC<MessageProps> = memo(
     // hooks
     const { hoveredMessageId, setHoveredMessageId } = useHoveredMessage();
     const { allowActions } = useAllowActions();
+    const traceStatus = classifyTraceMessage(message);
+    const statusLabel = {
+      success: "success",
+      no_result: "no result",
+      runtime_error: "runtime error",
+      no_progress: "no progress",
+      format_warning: "format warning",
+    }[traceStatus];
+    const statusClass = {
+      success: "bg-green-100 text-green-700",
+      no_result: "bg-slate-100 text-slate-700",
+      runtime_error: "bg-red-100 text-red-700",
+      no_progress: "bg-amber-100 text-amber-800",
+      format_warning: "bg-yellow-100 text-yellow-800",
+    }[traceStatus];
 
     useEffect(() => {
       const parsed = parseMessage(message);
@@ -146,7 +166,7 @@ const MessageCard: React.FC<MessageProps> = memo(
               : `message-history-item-${timestamp}`
           }
           data-history-index={historyIndex}
-          className={`bg-white p-4 shadow-md rounded-lg border-2 transition-colors duration-300 ${timestamp === hoveredMessageId ? "border-amber-500 bg-amber-50" : "border-white"} ${shouldBold ? "border-l-4 border-l-primary-700" : ""}`}
+          className={`bg-white p-4 shadow-md rounded-lg border-2 transition-colors duration-300 ${isErrorMessage(message) ? "border-red-500 bg-red-50" : timestamp === hoveredMessageId ? "border-amber-500 bg-amber-50" : "border-white"} ${shouldBold ? "border-l-4 border-l-primary-700" : ""}`}
           onPointerEnter={() => {
             timestamp != undefined && setHoveredMessageId(timestamp);
           }}
@@ -170,13 +190,18 @@ const MessageCard: React.FC<MessageProps> = memo(
               {" - "}
               {getEventDisplayName(outerMessage.innerMessageType)}
             </span>
+            <span className={`rounded px-2 py-0.5 text-xs ${statusClass}`}>
+              {statusLabel}
+            </span>
             <span
+              title={`原始 timestamp: ${timestamp}`}
               className={`font-semibold ${timestamp === hoveredMessageId ? "text-amber-500" : "font-semibold text-gray-400"}`}
             >
-              {timestamp}
+              {historyIndex === undefined ? timestamp : `#${historyIndex + 1}`}
             </span>
 
-            {allowRevert &&
+            {message.type !== "TraceFoldSummary" &&
+              allowRevert &&
               (outerMessage.outerMessageType === "Send" ||
                 outerMessage.outerMessageType === "Publish") && (
                 <button
@@ -192,12 +217,18 @@ const MessageCard: React.FC<MessageProps> = memo(
 
           <hr className="my-2" />
           <div className="overflow-auto max-h-[500px] p-1">
-            <DisplayMessage
-              type={outerMessage.innerMessageType}
-              allowEdit={outerMessage.canEditContent}
-              setMessage={setInnerMessage}
-              messageDict={outerMessage.innerMessage}
-            />
+            {message.type === "TraceFoldSummary" ? (
+              <p className="text-sm text-amber-800">
+                {getReadableMessageContent(message)}
+              </p>
+            ) : (
+              <DisplayMessage
+                type={outerMessage.innerMessageType}
+                allowEdit={outerMessage.canEditContent}
+                setMessage={setInnerMessage}
+                messageDict={outerMessage.innerMessage}
+              />
+            )}
           </div>
           {outerMessage.canEditContent &&
             !_.isEqual(originalInnerMessage, outerMessage.innerMessage) && (
