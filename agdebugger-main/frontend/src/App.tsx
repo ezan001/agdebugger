@@ -19,8 +19,18 @@ import type {
   MessageHistoryMap,
   MessageHistoryState,
   MessageDiagnostic,
+  RunInfo,
 } from "./shared-types";
 import type { WorkflowMessageType } from "./workflow-payload";
+import { getAgentBaseName } from "./utils/display-name";
+import {
+  analyzeTrace,
+  getReadableMessageContent,
+  getUserTraceMessages,
+} from "./utils/trace-display";
+
+const RUN_START_TIMESTAMP_KEY = "agdebugger.runStartTimestamp";
+const RUN_STARTED_AT_KEY = "agdebugger.runStartedAt";
 
 const App: React.FC = () => {
   const [agents, setAgents] = useState<AgentName[]>([]);
@@ -36,8 +46,20 @@ const App: React.FC = () => {
     undefined,
   );
   const [diagnostics, setDiagnostics] = useState<MessageDiagnostic[]>([]);
-  const [runStartTimestamp, setRunStartTimestamp] = useState<number>();
-  const [runStartedAt, setRunStartedAt] = useState<number>();
+  const [runStartTimestamp, setRunStartTimestamp] = useState<
+    number | undefined
+  >(() => {
+    const value = sessionStorage.getItem(RUN_START_TIMESTAMP_KEY);
+    return value === null ? undefined : Number(value);
+  });
+  const [runStartedAt, setRunStartedAt] = useState<number | undefined>(() => {
+    const value = sessionStorage.getItem(RUN_STARTED_AT_KEY);
+    return value === null ? undefined : Number(value);
+  });
+  const [showFullTrace, setShowFullTrace] = useState(false);
+  const [showAllHistory, setShowAllHistory] = useState(false);
+  const [currentRunId, setCurrentRunId] = useState<string>();
+  const [runs, setRuns] = useState<RunInfo[]>([]);
 
   // timer to poll backend
   useEffect(() => {
@@ -99,6 +121,8 @@ const App: React.FC = () => {
             ? prev
             : historyState.current_session,
         );
+        setCurrentRunId(historyState.current_run_id || undefined);
+        setRuns(historyState.runs || []);
       })
       .catch((error) => console.error("Error fetching history:", error));
 
@@ -146,19 +170,51 @@ const App: React.FC = () => {
       ),
       ...messageQueue.map((message) => message.timestamp),
     ];
-    setRunStartTimestamp(
-      timestamps.length > 0 ? Math.max(...timestamps) : -1,
-    );
-    setRunStartedAt(Date.now() / 1000);
+    const startTimestamp =
+      timestamps.length > 0 ? Math.max(...timestamps) : -1;
+    const startedAt = Date.now() / 1000;
+    setRunStartTimestamp(startTimestamp);
+    setRunStartedAt(startedAt);
+    setCurrentRunId(undefined);
+    sessionStorage.setItem(RUN_START_TIMESTAMP_KEY, String(startTimestamp));
+    sessionStorage.setItem(RUN_STARTED_AT_KEY, String(startedAt));
     setDiagnostics([]);
   }, [messageQueue, sessionHistory]);
 
   const onDiagnostic = useCallback((diagnostic: MessageDiagnostic) => {
+    if (diagnostic.run_id) setCurrentRunId(diagnostic.run_id);
     setDiagnostics((previous) => [
       diagnostic,
       ...previous.filter((item) => item.id !== diagnostic.id).slice(0, 49),
     ]);
   }, []);
+
+  const clearFrontendRunState = useCallback(() => {
+    setCurrentRunId(undefined);
+    setRunStartTimestamp(undefined);
+    setRunStartedAt(undefined);
+    setDiagnostics([]);
+    setMessageQueue([]);
+    setShowAllHistory(false);
+    sessionStorage.removeItem(RUN_START_TIMESTAMP_KEY);
+    sessionStorage.removeItem(RUN_STARTED_AT_KEY);
+  }, []);
+
+  const onClearCurrentRun = useCallback(async () => {
+    await api.post("/debugger/reset-current-run");
+    clearFrontendRunState();
+    setTimeStep((prev) => prev + 1);
+  }, [clearFrontendRunState]);
+
+  const onClearAllHistory = useCallback(async () => {
+    await api.post("/debugger/reset-all");
+    clearFrontendRunState();
+    setSessionHistory(undefined);
+    setRuns([]);
+    setCurrentSession(0);
+    setLogs([]);
+    setTimeStep((prev) => prev + 1);
+  }, [clearFrontendRunState]);
 
   const setLoop = useCallback((state: "start" | "stop") => {
     if (state === "start") {
@@ -187,23 +243,84 @@ const App: React.FC = () => {
   );
 
   const visibleMessages = useMemo(() => {
+    if (showAllHistory && memoizedSessionHistory != undefined) {
+      return Object.values(memoizedSessionHistory).flatMap(
+        (session) => session.messages,
+      );
+    }
     const messages =
       memoizedSessionHistory != undefined && currentSession != undefined
         ? memoizedSessionHistory[currentSession]?.messages || []
         : [];
+    if (!currentRunId && runs.length > 0) return [];
+    if (currentRunId && messages.some((message) => message.run_id)) {
+      return messages.filter((message) => message.run_id === currentRunId);
+    }
+    if (
+      runStartedAt !== undefined &&
+      messages.some((message) => message.run_started_at)
+    ) {
+      return messages.filter(
+        (message) => message.run_started_at === runStartedAt,
+      );
+    }
     return runStartTimestamp === undefined
       ? messages
       : messages.filter((message) => message.timestamp > runStartTimestamp);
-  }, [currentSession, memoizedSessionHistory, runStartTimestamp]);
+  }, [
+    currentRunId,
+    currentSession,
+    memoizedSessionHistory,
+    runStartTimestamp,
+    runStartedAt,
+    runs.length,
+    showAllHistory,
+  ]);
+
+  useEffect(() => {
+    if (runStartTimestamp === undefined || sessionHistory === undefined) return;
+    const timestamps = Object.values(sessionHistory).flatMap((session) =>
+      session.messages.map((message) => message.timestamp),
+    );
+    if (
+      timestamps.length > 0 &&
+      Math.max(...timestamps) < runStartTimestamp
+    ) {
+      setRunStartTimestamp(undefined);
+      setRunStartedAt(undefined);
+      sessionStorage.removeItem(RUN_START_TIMESTAMP_KEY);
+      sessionStorage.removeItem(RUN_STARTED_AT_KEY);
+    }
+  }, [runStartTimestamp, sessionHistory]);
+
+  const traceAnalysis = useMemo(
+    () => analyzeTrace(visibleMessages),
+    [visibleMessages],
+  );
+
+  const displayMessages = showFullTrace
+    ? visibleMessages
+    : traceAnalysis.visibleMessages;
 
   const visibleMessageQueue = useMemo(
     () =>
-      runStartTimestamp === undefined
+      showAllHistory
         ? memoizedMessageQueue
-        : memoizedMessageQueue.filter(
-            (message) => message.timestamp > runStartTimestamp,
-          ),
-    [memoizedMessageQueue, runStartTimestamp],
+        : currentRunId && memoizedMessageQueue.some((message) => message.run_id)
+        ? memoizedMessageQueue.filter(
+            (message) => message.run_id === currentRunId,
+          )
+        : runStartTimestamp === undefined
+          ? memoizedMessageQueue
+          : memoizedMessageQueue.filter(
+              (message) => message.timestamp > runStartTimestamp,
+            ),
+    [currentRunId, memoizedMessageQueue, runStartTimestamp, showAllHistory],
+  );
+
+  const displayMessageQueue = useMemo(
+    () => getUserTraceMessages(visibleMessageQueue, showFullTrace),
+    [showFullTrace, visibleMessageQueue],
   );
 
   const visibleSessionHistory = useMemo<MessageHistoryMap | undefined>(() => {
@@ -213,19 +330,68 @@ const App: React.FC = () => {
     return {
       [currentSession]: {
         ...current,
-        messages: visibleMessages,
+        messages: displayMessages,
       },
     };
-  }, [currentSession, memoizedSessionHistory, visibleMessages]);
+  }, [currentSession, displayMessages, memoizedSessionHistory]);
 
   const visibleDiagnostics = useMemo(
     () =>
-      runStartedAt === undefined
+      showAllHistory
         ? diagnostics
-        : diagnostics.filter(
-            (diagnostic) => diagnostic.created_at >= runStartedAt,
-          ),
-    [diagnostics, runStartedAt],
+        : currentRunId && diagnostics.some((diagnostic) => diagnostic.run_id)
+        ? diagnostics.filter(
+            (diagnostic) => diagnostic.run_id === currentRunId,
+          )
+        : runStartedAt === undefined
+          ? diagnostics
+          : diagnostics.filter(
+              (diagnostic) => diagnostic.created_at >= runStartedAt,
+            ),
+    [currentRunId, diagnostics, runStartedAt, showAllHistory],
+  );
+
+  const currentRun = useMemo(
+    () => runs.find((run) => run.run_id === currentRunId),
+    [currentRunId, runs],
+  );
+
+  const agentsUsed = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          visibleMessages
+            .flatMap((message) => [message.sender, message.recipient])
+            .filter((name): name is string => Boolean(name))
+            .map(getAgentBaseName)
+            .filter((name) => !["User", "Group", "Unknown"].includes(name)),
+        ),
+      ),
+    [visibleMessages],
+  );
+
+  const finalAnswer = useMemo(
+    () =>
+      [...traceAnalysis.visibleMessages]
+        .reverse()
+        .map(getReadableMessageContent)
+        .find(Boolean) || "",
+    [traceAnalysis.visibleMessages],
+  );
+
+  const errorSummary = useMemo(
+    () =>
+      visibleDiagnostics
+        .flatMap((diagnostic) =>
+          Object.entries(diagnostic.steps)
+            .filter(
+              ([, step]) =>
+                step.status === "error" || step.status === "failed",
+            )
+            .map(([name, step]) => `${name}: ${step.error || "error"}`),
+        )
+        .join("; "),
+    [visibleDiagnostics],
   );
 
   const memoizedRunControls = useMemo(
@@ -257,7 +423,7 @@ const App: React.FC = () => {
       <div className="flex grow">
         <div className="flex flex-col grow">
           <div className="border-b-2 border-b-gray-200 px-4 py-4 bg-gray-100 sticky top-0 z-10">
-            <AgentList agents={memoizedAgents} />
+            <AgentList agents={memoizedAgents} observedAgents={agentsUsed} />
           </div>
           <Container className="grow">
             <Section
@@ -294,7 +460,44 @@ const App: React.FC = () => {
             />
 
             <Section minSize={300} className="space-y-4 p-4">
-              <MessageList messageHistory={visibleMessages} />
+              <MessageList
+                messageHistory={displayMessages}
+                rawMessageCount={visibleMessages.length}
+                showFullTrace={showFullTrace}
+                onShowFullTraceChange={setShowFullTrace}
+                showAllHistory={showAllHistory}
+                onShowAllHistoryChange={setShowAllHistory}
+                runSummary={{
+                  task: currentRun?.task || "",
+                  runId: currentRunId || "",
+                  finalAnswer,
+                  normalMessageCount: traceAnalysis.visibleMessages.length,
+                  fullTraceCount: visibleMessages.length,
+                  hiddenInternalCount: traceAnalysis.hiddenInternalCount,
+                  foldedDuplicateCount: traceAnalysis.foldedDuplicateCount,
+                  errorEventCount:
+                    traceAnalysis.errorEventCount +
+                    visibleDiagnostics.filter((diagnostic) =>
+                      Object.values(diagnostic.steps).some(
+                        (step) =>
+                          step.status === "error" ||
+                          step.status === "failed",
+                      ),
+                    ).length,
+                  noResultCount: traceAnalysis.noResultCount,
+                  noProgressCount: traceAnalysis.noProgressCount,
+                  formatWarningCount: traceAnalysis.formatWarningCount,
+                  agentsUsed,
+                  errorSummary,
+                }}
+                onBranchCreated={(runId) => {
+                  setCurrentRunId(runId);
+                  setShowAllHistory(false);
+                  setTimeStep((prev) => prev + 1);
+                }}
+                onClearCurrentRun={onClearCurrentRun}
+                onClearAllHistory={onClearAllHistory}
+              />
 
               <hr />
 
@@ -308,8 +511,10 @@ const App: React.FC = () => {
             messageHistoryData={visibleSessionHistory}
             currentSession={currentSession}
             agents={memoizedAgents}
-            messageQueue={visibleMessageQueue}
+            messageQueue={displayMessageQueue}
             diagnostics={visibleDiagnostics}
+            currentRunId={currentRunId}
+            currentRun={currentRun}
           />
         )}
       </div>

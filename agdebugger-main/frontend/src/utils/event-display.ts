@@ -3,9 +3,10 @@ const EVENT_NAMES: Record<string, string> = {
   GroupChatMessage: "Agent 发言",
   GroupChatAgentResponse: "Agent 响应",
   GroupChatRequestPublish: "请求 Agent 执行",
-  GroupChatTermination: "任务结束",
+  GroupChatTermination: "任务成功结束",
   GroupChatError: "执行错误",
   None: "内部空响应",
+  TraceFoldSummary: "重复无进展事件",
 };
 
 const ACTION_NAMES: Record<string, string> = {

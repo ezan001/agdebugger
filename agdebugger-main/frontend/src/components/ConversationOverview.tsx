@@ -6,9 +6,15 @@ import type {
   Message,
   MessageDiagnostic,
   MessageHistoryMap,
+  RunInfo,
 } from "../shared-types";
-import { getAgentBaseName, getDisplayName } from "../utils/display-name";
+import { canonicalAgentKey, getDisplayName } from "../utils/display-name";
 import { getEventDisplayName } from "../utils/event-display";
+import {
+  classifyTraceMessage,
+  getInnerMessageType,
+  isErrorMessage,
+} from "../utils/trace-display";
 
 interface TimelineNode {
   id: string;
@@ -19,6 +25,7 @@ interface TimelineNode {
   status: "queued" | "processed" | "failed" | "edited";
   detail: unknown;
   timestamp?: number;
+  traceStatus?: string;
 }
 
 interface ConversationOverviewProps {
@@ -27,10 +34,12 @@ interface ConversationOverviewProps {
   agents: AgentName[];
   messageQueue: Message[];
   diagnostics: MessageDiagnostic[];
+  currentRunId?: string;
+  currentRun?: RunInfo;
 }
 
 const normalizeAgent = (value?: string | null) => {
-  return getAgentBaseName(value);
+  return canonicalAgentKey(value);
 };
 
 const ConversationOverview: React.FC<ConversationOverviewProps> = ({
@@ -39,57 +48,66 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
   agents,
   messageQueue,
   diagnostics,
+  currentRunId,
+  currentRun,
 }) => {
   const [selectedNode, setSelectedNode] = useState<TimelineNode>();
   const { setHoveredMessageId } = useHoveredMessage();
 
   const nodes = useMemo(() => {
     const result: TimelineNode[] = [];
+    const historyMessageIds = new Set<number>();
     Object.entries(messageHistoryData).forEach(([sessionId, session]) => {
       session.messages.forEach((message) => {
-        const innerType =
-          typeof message.message === "object" && message.message !== null
-            ? String((message.message as { type?: string }).type || message.type)
-            : message.type;
+        historyMessageIds.add(message.id);
+        const innerType = getInnerMessageType(message);
+        const failed = isErrorMessage(message);
         result.push({
           id: `history-${sessionId}-${message.timestamp}`,
-          lane: normalizeAgent(message.recipient || message.sender),
+          lane: failed
+            ? "Failure"
+            : normalizeAgent(message.recipient || message.sender),
           sender: normalizeAgent(message.sender),
           receiver: normalizeAgent(message.recipient),
           messageType: innerType,
-          status:
-            Number(sessionId) === currentSession ? "processed" : "edited",
+          status: failed
+            ? "failed"
+            : Number(sessionId) === currentSession
+              ? "processed"
+              : "edited",
           detail: message,
           timestamp: message.timestamp,
+          traceStatus: classifyTraceMessage(message),
         });
       });
     });
 
     messageQueue.forEach((message, index) => {
+      if (historyMessageIds.has(message.id)) return;
       result.push({
         id: `queue-${message.id}-${index}`,
-        lane: normalizeAgent(message.recipient),
+        lane: isErrorMessage(message)
+          ? "Failure"
+          : normalizeAgent(message.recipient),
         sender: normalizeAgent(message.sender),
         receiver: normalizeAgent(message.recipient),
         messageType:
           String((message.message as { type?: string })?.type || message.type),
-        status: "queued",
+        status: isErrorMessage(message) ? "failed" : "queued",
         detail: message,
         timestamp: message.timestamp,
+        traceStatus: classifyTraceMessage(message),
       });
     });
 
     diagnostics.forEach((diagnostic) => {
       const failedStep = Object.entries(diagnostic.steps).find(
-        ([, step]) => step.status === "error",
+        ([, step]) => step.status === "error" || step.status === "failed",
       );
       if (failedStep) {
         result.push({
           id: diagnostic.id,
-          lane: normalizeAgent(
-            (diagnostic.parsed_payload as { receiver?: string } | undefined)
-              ?.receiver,
-          ),
+          lane: "Failure",
           sender: "User",
           receiver:
             (diagnostic.parsed_payload as { receiver?: string } | undefined)
@@ -104,21 +122,34 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
         });
       }
     });
+    if (currentRun?.branch_from_timestamp !== undefined) {
+      result.push({
+        id: `branch-${currentRun.run_id}`,
+        lane: "EditBranch",
+        sender: "User",
+        receiver: "MagenticOneOrchestrator",
+        messageType: currentRun.branch_type || "RETRY_FROM_HERE",
+        status: "edited",
+        detail: currentRun,
+        timestamp: currentRun.branch_from_timestamp,
+      });
+    }
     return result;
-  }, [currentSession, diagnostics, messageHistoryData, messageQueue]);
+  }, [
+    currentRun,
+    currentSession,
+    diagnostics,
+    messageHistoryData,
+    messageQueue,
+  ]);
 
-  const lanes = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          "User",
-          "Orchestrator",
-          ...agents.map((agent) => normalizeAgent(agent)),
-          ...nodes.map((node) => node.lane),
-        ]),
-      ),
-    [agents, nodes],
-  );
+  const lanes = useMemo(() => {
+    const teamKeys = new Set(agents.map((agent) => normalizeAgent(agent)));
+    const eventKeys = new Set(nodes.map((node) => node.lane));
+    return Array.from(new Set([...teamKeys, ...eventKeys])).filter(
+      (lane) => teamKeys.has(lane) || eventKeys.has(lane),
+    );
+  }, [agents, nodes]);
 
   const statusClass: Record<TimelineNode["status"], string> = {
     queued: "border-amber-400 bg-amber-50",
@@ -148,13 +179,23 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
     <aside className="sticky top-0 h-screen w-[460px] shrink-0 overflow-auto border-l-2 border-gray-200 bg-gray-50 p-4">
       <div className="flex items-end justify-between">
         <h3 className="text-lg font-semibold">Agent 泳道与工作流时间线</h3>
-        <span className="text-sm">Session {currentSession}</span>
+        <span className="text-sm" title={currentRunId}>
+          {currentRunId
+            ? `Run ${currentRunId.slice(0, 8)}`
+            : `Session ${currentSession}`}
+        </span>
       </div>
       <div className="mt-2 flex flex-wrap gap-2 text-xs">
         <span className="rounded bg-amber-100 px-2 py-1">队列中</span>
         <span className="rounded bg-green-100 px-2 py-1">已处理</span>
-        <span className="rounded bg-red-100 px-2 py-1">失败</span>
-        <span className="rounded bg-purple-100 px-2 py-1">用户 edit 分支</span>
+        {nodes.some((node) => node.status === "failed") && (
+          <span className="rounded bg-red-100 px-2 py-1">失败</span>
+        )}
+        {nodes.some((node) => node.status === "edited") && (
+          <span className="rounded bg-purple-100 px-2 py-1">
+            用户 edit 分支
+          </span>
+        )}
       </div>
 
       <div className="mt-4 space-y-2">
@@ -193,6 +234,13 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
                       </span>
                     </div>
                     <div>{node.status}</div>
+                    {node.traceStatus &&
+                      node.traceStatus !== "success" &&
+                      node.status !== "failed" && (
+                        <div className="mt-1 font-medium">
+                          {node.traceStatus.replace("_", " ")}
+                        </div>
+                      )}
                   </button>
                 ))}
             </div>

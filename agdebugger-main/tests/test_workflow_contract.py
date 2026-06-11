@@ -93,6 +93,7 @@ async def test_start_task_endpoint_validates_converts_and_queues(monkeypatch):
             },
         )
         queue_response = await client.get("/api/getMessageQueue")
+        history_response = await client.get("/api/getSessionHistory")
 
     assert response.status_code == 200
     diagnostic = response.json()["diagnostic"]
@@ -100,11 +101,18 @@ async def test_start_task_endpoint_validates_converts_and_queues(monkeypatch):
     assert diagnostic["steps"]["schema_validated"]["status"] == "success"
     assert diagnostic["steps"]["workflow_message_created"]["detail"]["type"] == "GroupChatStart"
     assert diagnostic["steps"]["message_queued"]["detail"]["queue_size"] == 1
+    assert diagnostic["run_id"]
 
     queue = queue_response.json()
     assert len(queue) == 1
     assert queue[0]["message"]["type"] == "GroupChatStart"
     assert "GroupChatManager" in queue[0]["recipient"]
+    assert queue[0]["run_id"] == diagnostic["run_id"]
+    assert queue[0]["run_started_at"] == diagnostic["run_started_at"]
+
+    history_state = history_response.json()
+    assert history_state["current_run_id"] == diagnostic["run_id"]
+    assert history_state["runs"][0]["task"] == "hello"
 
 
 @pytest.mark.asyncio
@@ -134,3 +142,112 @@ async def test_workflow_endpoint_reports_raw_body_and_expected_schema(monkeypatc
     assert diagnostic["raw_body"]
     assert diagnostic["parsed_payload"]["content"] == "hello"
     assert "expected_schema" in schema_error["detail"]
+
+
+@pytest.mark.asyncio
+async def test_reset_all_clears_run_queue_history_and_diagnostics(monkeypatch):
+    app_module = importlib.import_module("agdebugger.app")
+
+    async def load_test_app(_module_str):
+        return get_agent_team()
+
+    monkeypatch.setattr(app_module, "load_app", load_test_app)
+    monkeypatch.setenv("AGDEBUGGER_BACKEND_SERVE_UI", "FALSE")
+    server = await app_module.get_server("unused:test")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server),
+        base_url="http://test",
+    ) as client:
+        start = await client.post(
+            "/api/workflow/messages",
+            json={
+                "message_type": "START_TASK",
+                "content": "hello",
+                "receiver": "Orchestrator",
+                "session_id": 0,
+                "run_mode": "manual",
+            },
+        )
+        assert start.status_code == 200
+
+        reset = await client.post("/api/debugger/reset-all")
+        queue = await client.get("/api/getMessageQueue")
+        history = await client.get("/api/getSessionHistory")
+        diagnostics = await client.get("/api/message_diagnostics")
+
+    assert reset.status_code == 200
+    assert queue.json() == []
+    assert diagnostics.json() == []
+    assert history.json()["current_run_id"] is None
+    assert history.json()["runs"] == []
+    assert history.json()["message_history"]["0"]["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_start_task_rejects_when_previous_queue_is_not_empty(monkeypatch):
+    app_module = importlib.import_module("agdebugger.app")
+
+    async def load_test_app(_module_str):
+        return get_agent_team()
+
+    monkeypatch.setattr(app_module, "load_app", load_test_app)
+    monkeypatch.setenv("AGDEBUGGER_BACKEND_SERVE_UI", "FALSE")
+    server = await app_module.get_server("unused:test")
+    payload = {
+        "message_type": "START_TASK",
+        "content": "hello",
+        "receiver": "Orchestrator",
+        "session_id": 0,
+        "run_mode": "manual",
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server),
+        base_url="http://test",
+    ) as client:
+        first = await client.post("/api/workflow/messages", json=payload)
+        second = await client.post("/api/workflow/messages", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 422
+    detail = second.json()["detail"]
+    assert "previous task" in detail["steps"]["workflow_message_created"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_reset_current_run_removes_only_current_run(monkeypatch):
+    app_module = importlib.import_module("agdebugger.app")
+
+    async def load_test_app(_module_str):
+        return get_agent_team()
+
+    monkeypatch.setattr(app_module, "load_app", load_test_app)
+    monkeypatch.setenv("AGDEBUGGER_BACKEND_SERVE_UI", "FALSE")
+    server = await app_module.get_server("unused:test")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server),
+        base_url="http://test",
+    ) as client:
+        start = await client.post(
+            "/api/workflow/messages",
+            json={
+                "message_type": "START_TASK",
+                "content": "hello",
+                "receiver": "Orchestrator",
+                "session_id": 0,
+                "run_mode": "manual",
+            },
+        )
+        run_id = start.json()["diagnostic"]["run_id"]
+        reset = await client.post("/api/debugger/reset-current-run")
+        queue = await client.get("/api/getMessageQueue")
+        history = await client.get("/api/getSessionHistory")
+        diagnostics = await client.get("/api/message_diagnostics")
+
+    assert reset.status_code == 200
+    assert reset.json()["current_run_id"] is None
+    assert queue.json() == []
+    assert all(run["run_id"] != run_id for run in history.json()["runs"])
+    assert all(item.get("run_id") != run_id for item in diagnostics.json())

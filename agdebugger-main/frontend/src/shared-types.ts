@@ -17,11 +17,34 @@ export interface Message {
   drop?: boolean;
   timestamp: number;
   id: number; // python object id
+  run_id?: string | null;
+  run_started_at?: number | null;
+  trace_status?: TraceStatus;
+  folded_count?: number;
 }
+
+export type TraceStatus =
+  | "success"
+  | "no_result"
+  | "runtime_error"
+  | "no_progress"
+  | "format_warning";
 
 export interface MessageHistoryState {
   current_session: number;
   message_history: MessageHistoryMap;
+  current_run_id?: string | null;
+  runs?: RunInfo[];
+}
+
+export interface RunInfo {
+  run_id: string;
+  task?: string | null;
+  started_at: number;
+  start_timestamp: number;
+  parent_run_id?: string | null;
+  branch_from_timestamp?: number;
+  branch_type?: string;
 }
 
 export interface MessageHistoryMap {
@@ -98,7 +121,7 @@ export type colorOption = "none" | "type" | "sender" | "recipient";
 
 export type ResetMap = { [key: number]: number };
 
-export type DiagnosticStatus = "pending" | "success" | "error";
+export type DiagnosticStatus = "pending" | "success" | "error" | "failed";
 
 export interface DiagnosticStep {
   status: DiagnosticStatus;
@@ -109,6 +132,9 @@ export interface DiagnosticStep {
 export interface MessageDiagnostic {
   id: string;
   created_at: number;
+  run_id?: string | null;
+  run_started_at?: number;
+  run_start_timestamp?: number;
   raw_body?: string;
   parsed_payload?: unknown;
   steps: Record<string, DiagnosticStep>;

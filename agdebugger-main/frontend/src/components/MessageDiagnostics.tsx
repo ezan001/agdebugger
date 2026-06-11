@@ -29,7 +29,7 @@ const MessageDiagnostics: React.FC<{
             const color =
               step.status === "success"
                 ? "border-green-300 bg-green-50"
-                : step.status === "error"
+                : step.status === "error" || step.status === "failed"
                   ? "border-red-400 bg-red-50"
                   : "border-gray-200 bg-gray-50";
             return (
@@ -37,7 +37,7 @@ const MessageDiagnostics: React.FC<{
                 <summary className="cursor-pointer text-sm font-medium">
                   {step.status === "success"
                     ? "✓"
-                    : step.status === "error"
+                    : step.status === "error" || step.status === "failed"
                       ? "!"
                       : "…"}{" "}
                   {label}
