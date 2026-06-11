@@ -42,11 +42,12 @@ const MessageList: React.FC<MessageListProps> = memo(({ messageHistory }) => {
       </div>
 
       <div className="space-y-1">
-        {messageHistory.map((message) => (
+        {messageHistory.map((message, index) => (
           <MessageCard
             key={`message.id-${message.timestamp}`}
             editId={message.timestamp}
             timestamp={message.timestamp}
+            historyIndex={index}
             message={message}
             writeEditAndRevertMessage={editHistory}
             writeMessageTag="Save & revert"

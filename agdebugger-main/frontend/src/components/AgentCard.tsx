@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import type { AgentName } from "../shared-types";
+import { getDisplayName } from "../utils/display-name";
 
 interface AgentCardProps {
   agent: AgentName;
@@ -54,11 +55,13 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
         onClick={openModal}
         size="sm"
       >
-        <h3 className="">{agent}</h3>
+        <h3 title={agent}>{getDisplayName(agent)}</h3>
       </Button>
 
       <Modal show={modalIsOpen} dismissible size="3xl" onClose={closeModal}>
-        <Modal.Header>{agent}</Modal.Header>
+        <Modal.Header>
+          <span title={agent}>{getDisplayName(agent)}</span>
+        </Modal.Header>
 
         <Modal.Body>
           {agentState && (

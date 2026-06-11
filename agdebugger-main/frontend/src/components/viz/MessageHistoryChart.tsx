@@ -131,18 +131,11 @@ const MessageHistoryChart: React.FC<MessageHistoryChartProps> = ({
   };
 
   const handleRectClick = (timestamp: number) => {
-    const target = document.getElementById(`message-timestamp-${timestamp}`);
+    const target = document.getElementById(`message-history-item-${timestamp}`);
     if (target) {
-      const offset = 120; // Adjust this value as needed
-      const bodyRect = document.body.getBoundingClientRect().top;
-      const elementRect = target.getBoundingClientRect().top;
-      const elementPosition = elementRect - bodyRect;
-      const offsetPosition = elementPosition - offset;
-
-      window.scrollTo({
-        top: offsetPosition,
-        behavior: "smooth",
-      });
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHoveredMessageId(timestamp);
+      window.setTimeout(() => setHoveredMessageId(undefined), 1800);
     }
   };
 

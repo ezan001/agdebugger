@@ -1,4 +1,6 @@
 import type { Message } from "../../shared-types";
+import { getDisplayName } from "../../utils/display-name";
+import { getEventDisplayName } from "../../utils/event-display";
 
 interface MessageTooltipProps {
   message: Message;
@@ -10,7 +12,7 @@ function getRecipient(message: Message): string {
 
   const recep = message.recipient ?? "Group";
 
-  return " → " + recep;
+  return " → " + getDisplayName(recep);
 }
 
 const MessageTooltip: React.FC<MessageTooltipProps> = ({ message }) => {
@@ -20,11 +22,13 @@ const MessageTooltip: React.FC<MessageTooltipProps> = ({ message }) => {
         Timestamp {message.timestamp}
       </div>
       <div>
-        {message.sender ?? "User"}
+        <span title={message.sender ?? "User"}>
+          {getDisplayName(message.sender)}
+        </span>
         {getRecipient(message)}
       </div>
       {/* @ts-expect-error might have type */}
-      <div>{message?.message?.type}</div>
+      <div>{getEventDisplayName(message?.message?.type)}</div>
     </div>
   );
 };
