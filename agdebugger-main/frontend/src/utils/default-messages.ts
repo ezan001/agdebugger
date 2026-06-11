@@ -8,9 +8,10 @@ export const DEFAULT_MESSAGES: {
     type: "GroupChatStart",
   },
   GroupChatAgentResponse: {
-    agent_response: {
+    response: {
       chat_message: TEXT_MESSAGE,
     },
+    name: "",
     type: "GroupChatAgentResponse",
   },
   GroupChatMessage: {

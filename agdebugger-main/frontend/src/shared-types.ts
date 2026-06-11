@@ -97,3 +97,19 @@ export interface CurrentStudyTasks {
 export type colorOption = "none" | "type" | "sender" | "recipient";
 
 export type ResetMap = { [key: number]: number };
+
+export type DiagnosticStatus = "pending" | "success" | "error";
+
+export interface DiagnosticStep {
+  status: DiagnosticStatus;
+  detail?: unknown;
+  error?: string;
+}
+
+export interface MessageDiagnostic {
+  id: string;
+  created_at: number;
+  raw_body?: string;
+  parsed_payload?: unknown;
+  steps: Record<string, DiagnosticStep>;
+}

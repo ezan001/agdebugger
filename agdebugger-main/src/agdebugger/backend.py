@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List
 
 from autogen_agentchat.teams import BaseGroupChat
@@ -49,6 +50,7 @@ class BackendRuntimeManager:
         self.log_handler = ListHandler()
         logger.addHandler(self.log_handler)
         self.ready = False
+        self.message_diagnostics: List[Dict[str, Any]] = []
 
         print("Initial Backend loaded.")
 
@@ -179,6 +181,34 @@ class BackendRuntimeManager:
         """
         agent_id = await self.runtime.get(recipient, key=self.agent_key)
         return asyncio.create_task(wait_for_future(self.runtime.send_message(new_message, agent_id, sender=sender)))
+
+    def resolve_recipient(self, recipient: str) -> str:
+        if recipient == "Orchestrator":
+            return self.groupchat._group_chat_manager_topic_type
+        if recipient in self.agent_names or recipient == self.groupchat._group_chat_manager_topic_type:
+            return recipient
+        raise ValueError(
+            f"Receiver '{recipient}' does not exist. Expected Orchestrator or one of: {', '.join(self.agent_names)}"
+        )
+
+    async def enqueue_message(self, new_message: Any, recipient: str) -> int:
+        if new_message is None:
+            raise ValueError("Typed workflow message cannot be None")
+
+        resolved_recipient = self.resolve_recipient(recipient)
+        queue_size_before = self.unprocessed_messages_count
+        await self.send_message(new_message, resolved_recipient)
+
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if self.unprocessed_messages_count > queue_size_before:
+                return self.unprocessed_messages_count
+        raise RuntimeError("Runtime accepted the send call but the message queue did not increase")
+
+    def add_diagnostic(self, diagnostic: Dict[str, Any]) -> None:
+        diagnostic["updated_at"] = time.time()
+        self.message_diagnostics.insert(0, diagnostic)
+        del self.message_diagnostics[50:]
 
     async def edit_message_queue(self, new_message: Any, edit_idx: int):
         """
