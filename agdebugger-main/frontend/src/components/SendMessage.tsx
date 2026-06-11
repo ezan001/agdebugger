@@ -5,20 +5,13 @@ import React, { memo, useEffect, useState } from "react";
 import { api } from "../api";
 import { useAllowActions } from "../context/AllowActionsContext";
 import type { AgentName, MessageDiagnostic } from "../shared-types";
+import { getDisplayName } from "../utils/display-name";
 import {
   buildWorkflowPayload,
   type RunMode,
   type WorkflowMessageType,
 } from "../workflow-payload";
 import GrowTextarea from "./common/GrowTextarea";
-
-const AGENT_LABELS: Record<string, string> = {
-  Orchestrator: "总控 Agent",
-  WebSurfer: "网页搜索 Agent",
-  FileSurfer: "文件读取 Agent",
-  Coder: "代码编写 Agent",
-  Executor: "代码执行 Agent",
-};
 
 const MODE_LABELS: Record<WorkflowMessageType, string> = {
   START_TASK: "开始新任务",
@@ -31,7 +24,8 @@ interface SendMessageProps {
   agents: AgentName[];
   checkpointTimestamps: number[];
   currentSession: number;
-  onSend: () => void;
+  onSend: (messageType: WorkflowMessageType) => void;
+  onStartTask: () => void;
   onDiagnostic: (diagnostic: MessageDiagnostic) => void;
 }
 
@@ -41,6 +35,7 @@ const SendMessage: React.FC<SendMessageProps> = memo(
     checkpointTimestamps,
     currentSession,
     onSend,
+    onStartTask,
     onDiagnostic,
   }) => {
     const [mode, setMode] = useState<WorkflowMessageType>("START_TASK");
@@ -101,6 +96,7 @@ const SendMessage: React.FC<SendMessageProps> = memo(
         checkpointTimestamp: checkpoint,
         gaiaMode,
       });
+      if (mode === "START_TASK") onStartTask();
       const frontendDiagnostic: MessageDiagnostic = {
         id: `frontend-${Date.now()}`,
         created_at: Date.now() / 1000,
@@ -119,7 +115,7 @@ const SendMessage: React.FC<SendMessageProps> = memo(
         onDiagnostic(response.data.diagnostic);
         setErrorMessage("");
         if (mode !== "SEND_MESSAGE") setContent("");
-        onSend();
+        onSend(mode);
       } catch (error: unknown) {
         const responseData =
           typeof error === "object" &&
@@ -152,7 +148,7 @@ const SendMessage: React.FC<SendMessageProps> = memo(
             ? JSON.stringify(responseData, null, 2)
             : String(error);
         setErrorMessage(detail);
-        onSend();
+        onSend(mode);
       }
     };
 
@@ -201,7 +197,7 @@ const SendMessage: React.FC<SendMessageProps> = memo(
                 )}
                 {agents.map((agent) => (
                   <option key={agent} value={agent}>
-                    {AGENT_LABELS[agent] || agent} ({agent})
+                    {getDisplayName(agent)}
                   </option>
                 ))}
               </Select>

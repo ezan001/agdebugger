@@ -1,20 +1,14 @@
 import { useMemo, useState } from "react";
 
+import { useHoveredMessage } from "../context/HoveredMessageContext";
 import type {
   AgentName,
   Message,
   MessageDiagnostic,
   MessageHistoryMap,
 } from "../shared-types";
-
-const AGENT_LABELS: Record<string, string> = {
-  Orchestrator: "总控 Agent",
-  WebSurfer: "网页搜索 Agent",
-  FileSurfer: "文件读取 Agent",
-  Coder: "代码编写 Agent",
-  Executor: "代码执行 Agent",
-  User: "用户",
-};
+import { getAgentBaseName, getDisplayName } from "../utils/display-name";
+import { getEventDisplayName } from "../utils/event-display";
 
 interface TimelineNode {
   id: string;
@@ -24,6 +18,7 @@ interface TimelineNode {
   messageType: string;
   status: "queued" | "processed" | "failed" | "edited";
   detail: unknown;
+  timestamp?: number;
 }
 
 interface ConversationOverviewProps {
@@ -35,9 +30,7 @@ interface ConversationOverviewProps {
 }
 
 const normalizeAgent = (value?: string | null) => {
-  if (!value) return "User";
-  if (value.includes("/")) return value.split("/")[0];
-  return value;
+  return getAgentBaseName(value);
 };
 
 const ConversationOverview: React.FC<ConversationOverviewProps> = ({
@@ -48,6 +41,7 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
   diagnostics,
 }) => {
   const [selectedNode, setSelectedNode] = useState<TimelineNode>();
+  const { setHoveredMessageId } = useHoveredMessage();
 
   const nodes = useMemo(() => {
     const result: TimelineNode[] = [];
@@ -66,6 +60,7 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
           status:
             Number(sessionId) === currentSession ? "processed" : "edited",
           detail: message,
+          timestamp: message.timestamp,
         });
       });
     });
@@ -80,6 +75,7 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
           String((message.message as { type?: string })?.type || message.type),
         status: "queued",
         detail: message,
+        timestamp: message.timestamp,
       });
     });
 
@@ -117,7 +113,7 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
         new Set([
           "User",
           "Orchestrator",
-          ...agents,
+          ...agents.map((agent) => normalizeAgent(agent)),
           ...nodes.map((node) => node.lane),
         ]),
       ),
@@ -129,6 +125,23 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
     processed: "border-green-400 bg-green-50",
     failed: "border-red-500 bg-red-50",
     edited: "border-purple-400 bg-purple-50",
+  };
+
+  const handleNodeClick = (node: TimelineNode) => {
+    setSelectedNode(node);
+    if (node.timestamp === undefined) return;
+
+    const target = document.getElementById(
+      `message-history-item-${node.timestamp}`,
+    );
+    if (!target) {
+      console.warn("No Message History item for timeline node", node.id);
+      return;
+    }
+
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHoveredMessageId(node.timestamp);
+    window.setTimeout(() => setHoveredMessageId(undefined), 1800);
   };
 
   return (
@@ -151,8 +164,7 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
             className="grid min-h-16 grid-cols-[120px_1fr] rounded border bg-white"
           >
             <div className="border-r bg-gray-100 p-2 text-sm font-medium">
-              <div>{AGENT_LABELS[lane] || lane}</div>
-              <div className="text-xs font-normal text-gray-500">{lane}</div>
+              <div title={lane}>{getDisplayName(lane)}</div>
             </div>
             <div className="flex flex-wrap items-center gap-2 p-2">
               {nodes
@@ -160,12 +172,25 @@ const ConversationOverview: React.FC<ConversationOverviewProps> = ({
                 .map((node) => (
                   <button
                     key={node.id}
-                    className={`max-w-52 rounded border-l-4 p-2 text-left text-xs ${statusClass[node.status]}`}
-                    onClick={() => setSelectedNode(node)}
+                    className={`max-w-52 cursor-pointer rounded border-l-4 p-2 text-left text-xs transition hover:brightness-95 hover:shadow ${statusClass[node.status]}`}
+                    onClick={() => handleNodeClick(node)}
+                    title={
+                      node.timestamp === undefined
+                        ? "查看事件详情"
+                        : "点击跳转到对应消息"
+                    }
                   >
-                    <div className="font-semibold">{node.messageType}</div>
+                    <div className="font-semibold">
+                      {getEventDisplayName(node.messageType)}
+                    </div>
                     <div className="truncate">
-                      {node.sender || "User"} → {node.receiver || lane}
+                      <span title={node.sender || "User"}>
+                        {getDisplayName(node.sender)}
+                      </span>
+                      {" → "}
+                      <span title={node.receiver || lane}>
+                        {getDisplayName(node.receiver || lane)}
+                      </span>
                     </div>
                     <div>{node.status}</div>
                   </button>

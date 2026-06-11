@@ -7,12 +7,18 @@ import { useAllowActions } from "../context/AllowActionsContext";
 import { useHoveredMessage } from "../context/HoveredMessageContext";
 import type { Message, GenericMessage } from "../shared-types";
 import { messageTypeFormat } from "../utils/colours";
+import { getDisplayName } from "../utils/display-name";
+import {
+  getActionDisplayName,
+  getEventDisplayName,
+} from "../utils/event-display";
 import DisplayMessage from "./MessageDisplays/DisplayMessage";
 
 interface MessageProps {
   message: Message;
   editId: number;
   timestamp?: number;
+  historyIndex?: number;
   writeEditAndRevertMessage: (
     id: number,
     message: GenericMessage | undefined,
@@ -81,18 +87,12 @@ function parseMessage(message: Message): MessageInfo {
   };
 }
 
-function getMessageTypeDisplay(inner?: string, outer?: string) {
-  if (inner != undefined && outer != undefined)
-    return `${outer ?? ""} - ${inner ?? ""}`;
-  if (inner != undefined) return inner;
-  return outer;
-}
-
 const MessageCard: React.FC<MessageProps> = memo(
   ({
     message,
     editId,
     timestamp,
+    historyIndex,
     writeEditAndRevertMessage,
     writeMessageTag = "Save edit",
     allowRevert = true,
@@ -140,26 +140,35 @@ const MessageCard: React.FC<MessageProps> = memo(
     return (
       outerMessage != undefined && (
         <div
-          id={`message-timestamp-${timestamp}`}
-          className={`bg-white p-4 shadow-md rounded-lg border-2 ${timestamp === hoveredMessageId ? "border-amber-500" : "border-white"} ${shouldBold ? "border-l-4 border-l-primary-700" : ""}`}
+          id={
+            historyIndex === undefined
+              ? undefined
+              : `message-history-item-${timestamp}`
+          }
+          data-history-index={historyIndex}
+          className={`bg-white p-4 shadow-md rounded-lg border-2 transition-colors duration-300 ${timestamp === hoveredMessageId ? "border-amber-500 bg-amber-50" : "border-white"} ${shouldBold ? "border-l-4 border-l-primary-700" : ""}`}
           onPointerEnter={() => {
             timestamp != undefined && setHoveredMessageId(timestamp);
           }}
           onPointerLeave={() => setHoveredMessageId(undefined)}
         >
           <div className="flex items-center gap-2">
-            <span className="">
-              {outerMessage.sender}{" "}
-              {outerMessage.recipient != undefined &&
-                "→ " + outerMessage.recipient}
+            <span>
+              <span title={outerMessage.sender}>
+                {getDisplayName(outerMessage.sender)}
+              </span>
+              {outerMessage.recipient != undefined && (
+                <span title={outerMessage.recipient}>
+                  {" → " + getDisplayName(outerMessage.recipient)}
+                </span>
+              )}
             </span>
             <div className="grow" />
 
             <span className="text-xs text-gray-500">
-              {getMessageTypeDisplay(
-                outerMessage.innerMessageType,
-                outerMessage.outerMessageType,
-              )}
+              {getActionDisplayName(outerMessage.outerMessageType)}
+              {" - "}
+              {getEventDisplayName(outerMessage.innerMessageType)}
             </span>
             <span
               className={`font-semibold ${timestamp === hoveredMessageId ? "text-amber-500" : "font-semibold text-gray-400"}`}

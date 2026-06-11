@@ -20,6 +20,7 @@ import type {
   MessageHistoryState,
   MessageDiagnostic,
 } from "./shared-types";
+import type { WorkflowMessageType } from "./workflow-payload";
 
 const App: React.FC = () => {
   const [agents, setAgents] = useState<AgentName[]>([]);
@@ -35,6 +36,8 @@ const App: React.FC = () => {
     undefined,
   );
   const [diagnostics, setDiagnostics] = useState<MessageDiagnostic[]>([]);
+  const [runStartTimestamp, setRunStartTimestamp] = useState<number>();
+  const [runStartedAt, setRunStartedAt] = useState<number>();
 
   // timer to poll backend
   useEffect(() => {
@@ -132,9 +135,23 @@ const App: React.FC = () => {
       .catch((error) => console.error("Error dropping next:", error));
   }, []);
 
-  const onSend = useCallback(() => {
+  const onSend = useCallback((_messageType: WorkflowMessageType) => {
     setTimeStep((prev) => prev + 1);
   }, []);
+
+  const onStartTask = useCallback(() => {
+    const timestamps = [
+      ...Object.values(sessionHistory || {}).flatMap((session) =>
+        session.messages.map((message) => message.timestamp),
+      ),
+      ...messageQueue.map((message) => message.timestamp),
+    ];
+    setRunStartTimestamp(
+      timestamps.length > 0 ? Math.max(...timestamps) : -1,
+    );
+    setRunStartedAt(Date.now() / 1000);
+    setDiagnostics([]);
+  }, [messageQueue, sessionHistory]);
 
   const onDiagnostic = useCallback((diagnostic: MessageDiagnostic) => {
     setDiagnostics((previous) => [
@@ -167,6 +184,48 @@ const App: React.FC = () => {
   const memoizedSessionHistory = useMemo(
     () => sessionHistory,
     [sessionHistory],
+  );
+
+  const visibleMessages = useMemo(() => {
+    const messages =
+      memoizedSessionHistory != undefined && currentSession != undefined
+        ? memoizedSessionHistory[currentSession]?.messages || []
+        : [];
+    return runStartTimestamp === undefined
+      ? messages
+      : messages.filter((message) => message.timestamp > runStartTimestamp);
+  }, [currentSession, memoizedSessionHistory, runStartTimestamp]);
+
+  const visibleMessageQueue = useMemo(
+    () =>
+      runStartTimestamp === undefined
+        ? memoizedMessageQueue
+        : memoizedMessageQueue.filter(
+            (message) => message.timestamp > runStartTimestamp,
+          ),
+    [memoizedMessageQueue, runStartTimestamp],
+  );
+
+  const visibleSessionHistory = useMemo<MessageHistoryMap | undefined>(() => {
+    if (currentSession === undefined) return undefined;
+    const current = memoizedSessionHistory?.[currentSession];
+    if (!current) return undefined;
+    return {
+      [currentSession]: {
+        ...current,
+        messages: visibleMessages,
+      },
+    };
+  }, [currentSession, memoizedSessionHistory, visibleMessages]);
+
+  const visibleDiagnostics = useMemo(
+    () =>
+      runStartedAt === undefined
+        ? diagnostics
+        : diagnostics.filter(
+            (diagnostic) => diagnostic.created_at >= runStartedAt,
+          ),
+    [diagnostics, runStartedAt],
   );
 
   const memoizedRunControls = useMemo(
@@ -209,6 +268,7 @@ const App: React.FC = () => {
               <SendMessage
                 agents={memoizedAgents}
                 onSend={onSend}
+                onStartTask={onStartTask}
                 onDiagnostic={onDiagnostic}
                 currentSession={currentSession ?? 0}
                 checkpointTimestamps={
@@ -220,7 +280,7 @@ const App: React.FC = () => {
                     : []
                 }
               />
-              <MessageDiagnostics diagnostics={diagnostics} />
+              <MessageDiagnostics diagnostics={visibleDiagnostics} />
               <MessageQueue
                 messages={memoizedMessageQueue}
                 numOutstandingTasks={numTasks}
@@ -234,14 +294,7 @@ const App: React.FC = () => {
             />
 
             <Section minSize={300} className="space-y-4 p-4">
-              <MessageList
-                messageHistory={
-                  memoizedSessionHistory != undefined &&
-                  currentSession != undefined
-                    ? memoizedSessionHistory[currentSession].messages
-                    : []
-                }
-              />
+              <MessageList messageHistory={visibleMessages} />
 
               <hr />
 
@@ -250,13 +303,13 @@ const App: React.FC = () => {
           </Container>
         </div>
 
-        {memoizedSessionHistory != undefined && currentSession != undefined && (
+        {visibleSessionHistory != undefined && currentSession != undefined && (
           <ConversationOverview
-            messageHistoryData={memoizedSessionHistory}
+            messageHistoryData={visibleSessionHistory}
             currentSession={currentSession}
             agents={memoizedAgents}
-            messageQueue={memoizedMessageQueue}
-            diagnostics={diagnostics}
+            messageQueue={visibleMessageQueue}
+            diagnostics={visibleDiagnostics}
           />
         )}
       </div>
