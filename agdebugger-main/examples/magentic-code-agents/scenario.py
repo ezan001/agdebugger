@@ -19,6 +19,26 @@ from autogen_ext.models.openai import OpenAIChatCompletionClient
 WORKSPACE = Path(__file__).resolve().parent / "workspace"
 EXECUTION_TIMEOUT_SECONDS = 20
 
+FINAL_ANSWER_PROMPT = """
+We are working on the following task:
+{task}
+
+We have completed the task.
+
+The above messages contain the conversation that took place to complete the task.
+
+Provide the final answer to the original request.
+
+CRITICAL FINAL ANSWER FORMAT RULES:
+- If the user asked "answer with only the number" or "answer with only the final number", output only the numeric value. Do not add words, punctuation, labels, or explanation.
+- If the user asked "answer with only true or false", output exactly one lowercase token: true or false.
+- If the user asked for "only the exact text", output only that text.
+- If the user asked for "exactly two words", output exactly two words.
+- Never prefix the answer with phrases like "The result is", "The final answer is", "The Python code was executed successfully", or "Based on the calculation".
+- Preserve all debugging details in the trace, but do not include them in the final answer.
+- When a Python execution result contains the requested value, use that value directly and obey the user's requested output format.
+"""
+
 DANGEROUS_CODE_PATTERNS = [
     r"\bos\.system\s*\(",
     r"\bsubprocess\.",
@@ -68,7 +88,11 @@ async def get_agent_team():
             "when calculation, counting, parsing, or format validation is useful. "
             "Do not use shell commands. Do not access user directories or files "
             "outside the provided task context. If code is needed, provide only "
-            "a ```python code block and a brief note about what it computes."
+            "a ```python code block and a brief note about what it computes. "
+            "The Python snippet must print the final computed value to stdout "
+            "with print(...), so the executor output can be used directly. "
+            "When the user requests a strict final format, make the printed "
+            "value match that format exactly."
         ),
     )
 
@@ -98,6 +122,7 @@ async def get_agent_team():
         model_client=model_client,
         max_turns=30,
         max_stalls=3,
+        final_answer_prompt=FINAL_ANSWER_PROMPT,
     )
 
     return team

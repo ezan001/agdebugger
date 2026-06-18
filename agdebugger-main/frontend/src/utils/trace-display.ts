@@ -28,6 +28,9 @@ const FORMAT_WARNING_PATTERNS = [
   /\bformat warning\b/i,
   /\bdoes not (?:match|follow) (?:the )?(?:requested )?format\b/i,
   /\bexpected format\b/i,
+  /\bthe (?:result|final answer) (?:of .+ )?is\b/i,
+  /\bbased on (?:the )?(?:calculation|python code|execution)\b/i,
+  /\bthe python code was executed successfully\b/i,
   /格式(?:不符|警告|错误)/,
 ];
 
@@ -73,6 +76,8 @@ export function formatReadableContent(value: unknown): string {
   }
   if (value === null || value === undefined) return "";
   if (Array.isArray(value)) {
+    const output = getExecutionOutput(value);
+    if (output) return output;
     return value
       .map((item) =>
         typeof item === "string"
@@ -83,9 +88,33 @@ export function formatReadableContent(value: unknown): string {
       .join("\n");
   }
   if (typeof value === "object") {
+    const output = getExecutionOutput(value);
+    if (output) return output;
     return "[截图对象，点击 Details 查看]";
   }
   return String(value);
+}
+
+function getExecutionOutput(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  if (Array.isArray(value)) {
+    return value.map(getExecutionOutput).find(Boolean) || "";
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["stdout", "output"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  for (const key of ["result", "execution_result", "code_result"]) {
+    const nested = getExecutionOutput(record[key]);
+    if (nested) return nested;
+  }
+
+  return "";
 }
 
 export function getReadableMessageContent(message: Message): string {
